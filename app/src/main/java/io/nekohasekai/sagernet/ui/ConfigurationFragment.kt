@@ -833,31 +833,58 @@ class ConfigurationFragment @JvmOverloads constructor(
         }
     }
 
+    /**
+     * URL Test without monopolizing the UI: no modal dialog.
+     * Runs concurrent workers in the background, streams results into the node list,
+     * and shows progress only via notification + snackbar.
+     */
     @OptIn(DelicateCoroutinesApi::class)
     fun urlTest() {
-        if (DataStore.runningTest) return else DataStore.runningTest = true
-        val test = TestDialog()
-        val dialog = test.builder.show()
+        if (DataStore.runningTest) {
+            snackbar(R.string.connection_test_testing).show()
+            return
+        }
+        DataStore.runningTest = true
+
         val testJobs = mutableListOf<Job>()
         val group = DataStore.currentGroup()
-        // When proxy is connected, run each node test in bg so sockets get protect().
+        val finishedN = AtomicInteger(0)
         val mainActivity = activity as? MainActivity
         val testInBgProcess = DataStore.serviceState.connected && mainActivity != null
+        val notification = ConnectionTestNotification(
+            requireContext(),
+            "[${group.displayName()}] ${getString(R.string.connection_test_url_test)}"
+        )
 
-        val mainJob = runOnDefaultDispatcher {
+        snackbar(R.string.connection_test_testing).show()
+
+        runOnDefaultDispatcher {
             val profilesList = SagerDatabase.proxyDao.getByGroup(group.id)
-            test.proxyN = profilesList.size
+            val proxyN = profilesList.size
+            if (proxyN == 0) {
+                runOnMainDispatcher {
+                    notification.updateNotification(0, 0, true)
+                    DataStore.runningTest = false
+                }
+                return@runOnDefaultDispatcher
+            }
+
+            // Mark all as testing so the list shows progress without a blocking dialog.
+            profilesList.forEach { it.status = 0 }
+            try {
+                ProfileManager.updateProfile(profilesList)
+            } catch (e: Exception) {
+                Logs.w(e)
+            }
+            notification.updateNotification(0, proxyN, false)
+
             val profiles = ConcurrentLinkedQueue(profilesList)
-            // Concurrent workers; each node uses an independent non-exclusive test instance
-            // (no shared cache.db flock via NewTestSingBoxInstance).
             val concurrent = DataStore.connectionTestConcurrent.coerceAtLeast(1)
             repeat(concurrent) {
                 testJobs.add(launch(Dispatchers.IO) {
                     val urlTest = UrlTest()
                     while (isActive) {
                         val profile = profiles.poll() ?: break
-                        profile.status = 0
-
                         try {
                             val result = withTimeoutOrNull(
                                 UrlTest.TEST_TIMEOUT_MS * 2L + 2500L
@@ -881,7 +908,13 @@ class ConfigurationFragment @JvmOverloads constructor(
                             Logs.w("urlTest ${profile.displayName()}: ${e.readableMessage}")
                         }
 
-                        test.update(profile)
+                        try {
+                            ProfileManager.updateProfile(profile)
+                        } catch (e: Exception) {
+                            Logs.w(e)
+                        }
+                        val progress = finishedN.addAndGet(1)
+                        notification.updateNotification(progress, proxyN, progress >= proxyN)
                     }
                 })
             }
@@ -889,33 +922,12 @@ class ConfigurationFragment @JvmOverloads constructor(
             testJobs.joinAll()
 
             runOnMainDispatcher {
-                test.cancel()
-            }
-        }
-        test.cancel = {
-            test.dialogStatus.set(2)
-            dialog.dismiss()
-            runOnDefaultDispatcher {
-                mainJob.cancel()
-                testJobs.forEach { it.cancel() }
-                test.results.forEach {
-                    try {
-                        ProfileManager.updateProfile(it)
-                    } catch (e: Exception) {
-                        Logs.w(e)
-                    }
-                }
-                GroupManager.postReload(DataStore.currentGroupId())
+                notification.updateNotification(proxyN, proxyN, true)
                 DataStore.runningTest = false
+                if (isAdded) {
+                    snackbar("${getString(R.string.connection_test)} · $proxyN").show()
+                }
             }
-        }
-        test.minimize = {
-            test.dialogStatus.set(1)
-            test.notification = ConnectionTestNotification(
-                dialog.context,
-                "[${group.displayName()}] ${getString(R.string.connection_test)}"
-            )
-            dialog.hide()
         }
     }
 
