@@ -21,16 +21,20 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.23.6"
+          cache: false
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK r25b
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r25b
-          link-to-sdk: true
+      - name: Install NDK r25b + platform packages
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "ndk;25.0.8775105" \
+            "platforms;android-35" \
+            "build-tools;35.0.1" \
+            "platform-tools"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/25.0.8775105" >> "$GITHUB_ENV"
+          echo "NDK=${ANDROID_HOME}/ndk/25.0.8775105" >> "$GITHUB_ENV"
 
       - name: Golang Status
         run: find buildScript libcore/*.sh | xargs cat | sha1sum > golang_status
@@ -48,16 +52,12 @@ jobs:
 
       - name: Native Build
         if: steps.cache.outputs.cache-hit != 'true'
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          mkdir -p "$ANDROID_HOME/ndk"
-          # env_ndk.sh prefers ANDROID_HOME/ndk/25.0.8775105
-          ln -sfn "${{ steps.setup-ndk.outputs.ndk-path }}" "$ANDROID_HOME/ndk/25.0.8775105"
+          set -euo pipefail
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
           echo "ndk.dir=${ANDROID_HOME}/ndk/25.0.8775105" >> local.properties
-          chmod +x run libcore/*.sh buildScript/**/*.sh || true
+          chmod +x run
+          find buildScript libcore -name '*.sh' -exec chmod +x {} +
           ./run lib core
 
       - name: Upload libcore.aar
@@ -82,8 +82,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install Android platform packages
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.1" \
+            "platform-tools"
 
       - name: Download libcore.aar
         uses: actions/download-artifact@v4
@@ -106,8 +112,10 @@ jobs:
           ALIAS_NAME: androiddebugkey
           ALIAS_PASS: android
         run: |
+          set -euo pipefail
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          chmod +x run gradlew buildScript/**/*.sh || true
+          chmod +x run gradlew
+          find buildScript -name '*.sh' -exec chmod +x {} +
           ./run init action gradle
           ./gradlew app:assembleOssRelease --no-daemon --stacktrace
           APK_DIR=$(dirname "$(find app/build/outputs/apk -name '*arm64-v8a*.apk' | head -n1)")
