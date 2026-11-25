@@ -23,6 +23,7 @@ import (
 	"github.com/sagernet/sing-box/common/conntrack"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/constant"
+	sblog "github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/service"
 	"github.com/sagernet/sing/service/pause"
@@ -80,7 +81,26 @@ type BoxInstance struct {
 }
 
 func NewSingBoxInstance(config string, localTransport LocalDNSTransport) (b *BoxInstance, err error) {
+	return newSingBoxInstance(config, localTransport, true)
+}
+
+// NewTestSingBoxInstance creates a one-shot instance for URL tests without PlatformLogWriter.
+//
+// sing-box sets needCacheFile when PlatformLogWriter != nil, which opens no_backup/cache.db
+// with an exclusive bbolt flock. While the main proxy holds that lock, every test instance
+// blocks on Open and concurrent URL tests effectively serialize / time out. Test instances
+// do not need cache or Clash API; omitting the writer allows true parallel testing.
+func NewTestSingBoxInstance(config string, localTransport LocalDNSTransport) (b *BoxInstance, err error) {
+	return newSingBoxInstance(config, localTransport, false)
+}
+
+func newSingBoxInstance(config string, localTransport LocalDNSTransport, platformLog bool) (b *BoxInstance, err error) {
 	defer device.DeferPanicToError("NewSingBoxInstance", func(err_ error) { err = err_ })
+
+	var platformLogWriter sblog.PlatformWriter
+	if platformLog {
+		platformLogWriter = boxPlatformLogWriter
+	}
 
 	// create box context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -102,7 +122,7 @@ func NewSingBoxInstance(config string, localTransport LocalDNSTransport) (b *Box
 	instance, err := box.New(box.Options{
 		Options:           options,
 		Context:           ctx,
-		PlatformLogWriter: boxPlatformLogWriter,
+		PlatformLogWriter: platformLogWriter,
 	})
 	if err != nil {
 		cancel()

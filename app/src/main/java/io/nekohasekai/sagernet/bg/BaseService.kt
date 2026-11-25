@@ -13,6 +13,7 @@ import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.aidl.ISagerNetService
 import io.nekohasekai.sagernet.aidl.ISagerNetServiceCallback
 import io.nekohasekai.sagernet.bg.proto.ProxyInstance
+import io.nekohasekai.sagernet.bg.proto.TestInstance
 import io.nekohasekai.sagernet.database.DataStore
 import io.nekohasekai.sagernet.database.SagerDatabase
 import io.nekohasekai.sagernet.ktx.*
@@ -147,6 +148,25 @@ class BaseService {
                 return Libcore.urlTest(
                     data!!.proxy!!.box, DataStore.connectionTestURL, 3000
                 )
+            } catch (e: Exception) {
+                error(Protocols.genFriendlyMsg(e.readableMessage))
+            }
+        }
+
+        /**
+         * URL-test one profile inside the bg process.
+         * When VPN is up, UI-process test sockets often miss protect() and get sucked
+         * into tun; bg can call VpnService.protect directly.
+         */
+        override fun urlTestProfile(profileId: Long, link: String, timeout: Int): Int {
+            val profile = SagerDatabase.proxyDao.getById(profileId)
+                ?: error("no profile $profileId")
+            try {
+                return runBlocking {
+                    TestInstance(profile, link, timeout).doTest()
+                }
+            } catch (e: PluginManager.PluginNotFoundException) {
+                error(e.readableMessage)
             } catch (e: Exception) {
                 error(Protocols.genFriendlyMsg(e.readableMessage))
             }

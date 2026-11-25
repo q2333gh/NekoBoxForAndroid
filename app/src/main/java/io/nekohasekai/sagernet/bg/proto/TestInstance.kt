@@ -47,7 +47,9 @@ class TestInstance(profile: ProxyEntity, val link: String, private val timeout: 
     override suspend fun loadConfig() {
         // don't call destroyAllJsi here
         if (BuildConfig.DEBUG) Logs.d(config.config)
-        box = Libcore.newSingBoxInstance(config.config, LocalResolverImpl)
+        // Use newTestSingBoxInstance: no PlatformLogWriter => no shared cache.db flock,
+        // so concurrent URL tests are not blocked by the main proxy instance.
+        box = Libcore.newTestSingBoxInstance(config.config, LocalResolverImpl)
     }
 
 }

@@ -100,6 +100,8 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.TimeoutException
 import moe.matsuri.nb4a.Protocols
 import moe.matsuri.nb4a.Protocols.getProtocolColor
 import moe.matsuri.nb4a.proxy.anytls.AnyTLSSettingsActivity
@@ -838,20 +840,36 @@ class ConfigurationFragment @JvmOverloads constructor(
         val dialog = test.builder.show()
         val testJobs = mutableListOf<Job>()
         val group = DataStore.currentGroup()
+        // When proxy is connected, run each node test in bg so sockets get protect().
+        val mainActivity = activity as? MainActivity
+        val testInBgProcess = DataStore.serviceState.connected && mainActivity != null
 
         val mainJob = runOnDefaultDispatcher {
             val profilesList = SagerDatabase.proxyDao.getByGroup(group.id)
             test.proxyN = profilesList.size
             val profiles = ConcurrentLinkedQueue(profilesList)
-            repeat(DataStore.connectionTestConcurrent) {
+            // Concurrent workers; each node uses an independent non-exclusive test instance
+            // (no shared cache.db flock via NewTestSingBoxInstance).
+            val concurrent = DataStore.connectionTestConcurrent.coerceAtLeast(1)
+            repeat(concurrent) {
                 testJobs.add(launch(Dispatchers.IO) {
-                    val urlTest = UrlTest() // note: this is NOT in bg process
+                    val urlTest = UrlTest()
                     while (isActive) {
                         val profile = profiles.poll() ?: break
                         profile.status = 0
 
                         try {
-                            val result = urlTest.doTest(profile)
+                            val result = withTimeoutOrNull(
+                                UrlTest.TEST_TIMEOUT_MS * 2L + 2500L
+                            ) {
+                                if (testInBgProcess) {
+                                    mainActivity!!.urlTestProfile(
+                                        profile.id, urlTest.link, urlTest.timeout
+                                    )
+                                } else {
+                                    urlTest.doTest(profile)
+                                }
+                            } ?: throw TimeoutException("url test timeout")
                             profile.status = 1
                             profile.ping = result
                         } catch (e: PluginManager.PluginNotFoundException) {
@@ -860,6 +878,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                         } catch (e: Exception) {
                             profile.status = 3
                             profile.error = e.readableMessage
+                            Logs.w("urlTest ${profile.displayName()}: ${e.readableMessage}")
                         }
 
                         test.update(profile)

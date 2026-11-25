@@ -154,6 +154,12 @@ class MainActivity : ThemedActivity(),
         return connection.service!!.urlTest()
     }
 
+    /** Per-profile URL test via bg process (call from IO thread). */
+    fun urlTestProfile(profileId: Long, link: String, timeout: Int): Int {
+        val service = connection.service ?: error("service not connected")
+        return service.urlTestProfile(profileId, link, timeout)
+    }
+
     suspend fun importSubscription(uri: Uri) {
         val group: ProxyGroup
 
