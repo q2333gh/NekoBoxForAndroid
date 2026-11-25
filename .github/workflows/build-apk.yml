@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+env:
+  ANDROID_SDK_ROOT: /home/runner/android-sdk
+  ANDROID_HOME: /home/runner/android-sdk
+  NDK_VERSION: 25.0.8775105
+
 jobs:
   libcore:
     name: Native Build (LibCore)
@@ -23,18 +28,26 @@ jobs:
           go-version: "1.23.6"
           cache: false
 
-      - name: Install NDK r25b + platform packages
+      - name: Install Android SDK / NDK
         run: |
           set -euo pipefail
-          echo "ANDROID_HOME=${ANDROID_HOME}"
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install \
-            "ndk;25.0.8775105" \
+          SDK_ROOT="${ANDROID_SDK_ROOT}"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/cmdline.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline.zip -d "$SDK_ROOT/cmdline-tools"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          SM="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --licenses >/dev/null || true
+          "$SM" --install \
+            "ndk;${NDK_VERSION}" \
             "platforms;android-35" \
             "build-tools;35.0.1" \
             "platform-tools"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/25.0.8775105" >> "$GITHUB_ENV"
-          echo "NDK=${ANDROID_HOME}/ndk/25.0.8775105" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "NDK=${SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "${SDK_ROOT}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "${SDK_ROOT}/platform-tools" >> "$GITHUB_PATH"
 
       - name: Golang Status
         run: find buildScript libcore/*.sh | xargs cat | sha1sum > golang_status
@@ -55,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          echo "ndk.dir=${ANDROID_HOME}/ndk/25.0.8775105" >> local.properties
+          echo "ndk.dir=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> local.properties
           chmod +x run
           find buildScript libcore -name '*.sh' -exec chmod +x {} +
           ./run lib core
@@ -82,14 +95,23 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Android platform packages
+      - name: Install Android SDK
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install \
+          SDK_ROOT="${ANDROID_SDK_ROOT}"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/cmdline.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline.zip -d "$SDK_ROOT/cmdline-tools"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          SM="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --licenses >/dev/null || true
+          "$SM" --install \
             "platforms;android-35" \
             "build-tools;35.0.1" \
             "platform-tools"
+          echo "${SDK_ROOT}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "${SDK_ROOT}/platform-tools" >> "$GITHUB_PATH"
 
       - name: Download libcore.aar
         uses: actions/download-artifact@v4
