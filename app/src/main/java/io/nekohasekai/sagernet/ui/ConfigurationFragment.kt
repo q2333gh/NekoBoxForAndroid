@@ -835,8 +835,8 @@ class ConfigurationFragment @JvmOverloads constructor(
 
     /**
      * URL Test without monopolizing the UI: no modal dialog.
-     * Runs concurrent workers in the background, streams results into the node list,
-     * and shows progress only via notification + snackbar.
+     * Concurrent workers; each finished node is written to DB and pushed to the main
+     * profile list immediately (测一个更新一个).
      */
     @OptIn(DelicateCoroutinesApi::class)
     fun urlTest() {
@@ -849,6 +849,7 @@ class ConfigurationFragment @JvmOverloads constructor(
         val testJobs = mutableListOf<Job>()
         val group = DataStore.currentGroup()
         val finishedN = AtomicInteger(0)
+        val publishLock = Mutex()
         val mainActivity = activity as? MainActivity
         val testInBgProcess = DataStore.serviceState.connected && mainActivity != null
         val notification = ConnectionTestNotification(
@@ -857,6 +858,13 @@ class ConfigurationFragment @JvmOverloads constructor(
         )
 
         snackbar(R.string.connection_test_testing).show()
+
+        // Persist + notify main list listeners. Called after every single node result.
+        suspend fun publishToMainUi(profile: ProxyEntity) {
+            publishLock.withLock {
+                ProfileManager.updateProfile(profile)
+            }
+        }
 
         runOnDefaultDispatcher {
             val profilesList = SagerDatabase.proxyDao.getByGroup(group.id)
@@ -869,13 +877,8 @@ class ConfigurationFragment @JvmOverloads constructor(
                 return@runOnDefaultDispatcher
             }
 
-            // Mark all as testing so the list shows progress without a blocking dialog.
-            profilesList.forEach { it.status = 0 }
-            try {
-                ProfileManager.updateProfile(profilesList)
-            } catch (e: Exception) {
-                Logs.w(e)
-            }
+            // Keep previous latency until each node finishes; only the node under test
+            // flips to status=0 ("Testing…") so the main list updates incrementally.
             notification.updateNotification(0, proxyN, false)
 
             val profiles = ConcurrentLinkedQueue(profilesList)
@@ -885,6 +888,15 @@ class ConfigurationFragment @JvmOverloads constructor(
                     val urlTest = UrlTest()
                     while (isActive) {
                         val profile = profiles.poll() ?: break
+
+                        profile.status = 0
+                        profile.error = null
+                        try {
+                            publishToMainUi(profile)
+                        } catch (e: Exception) {
+                            Logs.w(e)
+                        }
+
                         try {
                             val result = withTimeoutOrNull(
                                 UrlTest.TEST_TIMEOUT_MS * 2L + 2500L
@@ -899,6 +911,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                             } ?: throw TimeoutException("url test timeout")
                             profile.status = 1
                             profile.ping = result
+                            profile.error = null
                         } catch (e: PluginManager.PluginNotFoundException) {
                             profile.status = 2
                             profile.error = e.readableMessage
@@ -909,7 +922,7 @@ class ConfigurationFragment @JvmOverloads constructor(
                         }
 
                         try {
-                            ProfileManager.updateProfile(profile)
+                            publishToMainUi(profile)
                         } catch (e: Exception) {
                             Logs.w(e)
                         }
@@ -1387,23 +1400,24 @@ class ConfigurationFragment @JvmOverloads constructor(
 
             override suspend fun onUpdated(profile: ProxyEntity, noTraffic: Boolean) {
                 if (profile.groupId != proxyGroup.id) return
-                val index = configurationIdList.indexOf(profile.id)
-                if (index < 0) return
+                // Capture traffic before replacing the list entry (needed when noTraffic).
+                val previous = configurationList[profile.id]
                 configurationListView.post {
                     if (::undoManager.isInitialized) {
                         undoManager.flush()
                     }
                     configurationList[profile.id] = profile
-                    notifyItemChanged(index)
-                    //
-                    val oldProfile = configurationList[profile.id]
-                    if (noTraffic && oldProfile != null) {
+                    val index = configurationIdList.indexOf(profile.id)
+                    if (index >= 0) {
+                        notifyItemChanged(index)
+                    }
+                    if (noTraffic && previous != null) {
                         runOnDefaultDispatcher {
                             onUpdated(
                                 TrafficData(
                                     id = profile.id,
-                                    rx = oldProfile.rx,
-                                    tx = oldProfile.tx
+                                    rx = previous.rx,
+                                    tx = previous.tx
                                 )
                             )
                         }
@@ -1593,7 +1607,13 @@ class ConfigurationFragment @JvmOverloads constructor(
                 (trafficText.parent as View).isGone =
                     (!showTraffic || proxyEntity.status <= 0) && address.isBlank()
 
-                if (proxyEntity.status <= 0) {
+                if (proxyEntity.status == 0 && DataStore.runningTest) {
+                    // Live URL/TCP test: show Testing… on the main list row immediately.
+                    profileStatus.text = getString(R.string.connection_test_testing)
+                    profileStatus.setTextColor(
+                        requireContext().getColorAttr(android.R.attr.textColorSecondary)
+                    )
+                } else if (proxyEntity.status <= 0) {
                     if (showTraffic) {
                         profileStatus.text = trafficText.text
                         profileStatus.setTextColor(requireContext().getColorAttr(android.R.attr.textColorSecondary))
