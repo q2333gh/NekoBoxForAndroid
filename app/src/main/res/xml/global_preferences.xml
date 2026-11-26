@@ -98,15 +98,23 @@
 
     <PreferenceCategory app:title="@string/cag_route">
         <SwitchPreference
+            app:defaultValue="true"
+            app:icon="@drawable/ic_baseline_legend_toggle_24"
+            app:key="autoSplitChina"
+            app:summary="@string/auto_split_china_summary"
+            app:title="@string/auto_split_china" />
+        <SwitchPreference
             app:icon="@drawable/ic_navigation_apps"
             app:key="proxyApps"
             app:summary="@string/proxied_apps_summary"
             app:title="@string/proxied_apps" />
         <SwitchPreference
+            app:defaultValue="true"
             app:icon="@drawable/ic_baseline_legend_toggle_24"
             app:key="bypassLan"
             app:title="@string/route_opt_bypass_lan" />
         <SwitchPreference
+            app:defaultValue="true"
             app:key="bypassLanInCore"
             app:title="@string/bypass_lan_in_core" />
         <moe.matsuri.nb4a.ui.SimpleMenuPreference

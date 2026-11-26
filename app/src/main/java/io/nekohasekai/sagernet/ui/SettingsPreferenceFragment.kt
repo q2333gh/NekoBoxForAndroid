@@ -13,6 +13,7 @@ import io.nekohasekai.sagernet.Key
 import io.nekohasekai.sagernet.R
 import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.database.DataStore
+import io.nekohasekai.sagernet.database.ProfileManager
 import io.nekohasekai.sagernet.database.preference.EditTextPreferenceModifiers
 import io.nekohasekai.sagernet.ktx.*
 import io.nekohasekai.sagernet.utils.Theme
@@ -70,6 +71,7 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         val ipv6Mode = findPreference<Preference>(Key.IPV6_MODE)!!
         val trafficSniffing = findPreference<Preference>(Key.TRAFFIC_SNIFFING)!!
 
+        val autoSplitChina = findPreference<SwitchPreference>(Key.AUTO_SPLIT_CHINA)!!
         val bypassLan = findPreference<SwitchPreference>(Key.BYPASS_LAN)!!
         val bypassLanInCore = findPreference<SwitchPreference>(Key.BYPASS_LAN_IN_CORE)!!
 
@@ -152,6 +154,15 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
         appendHttpProxy.onPreferenceChangeListener = reloadListener
         showDirectSpeed.onPreferenceChangeListener = reloadListener
         trafficSniffing.onPreferenceChangeListener = reloadListener
+        autoSplitChina.setOnPreferenceChangeListener { _, newValue ->
+            val enabled = newValue as Boolean
+            runOnDefaultDispatcher {
+                DataStore.autoSplitChina = enabled
+                ProfileManager.syncChinaSplitRules(enabled)
+            }
+            needReload()
+            true
+        }
         bypassLan.onPreferenceChangeListener = reloadListener
         bypassLanInCore.onPreferenceChangeListener = reloadListener
         mtu.onPreferenceChangeListener = reloadListener

@@ -168,72 +168,162 @@ object ProfileManager {
     }
 
     suspend fun deleteRule(ruleId: Long) {
-        SagerDatabase.rulesDao.deleteById(ruleId)
+        if (SagerDatabase.rulesDao.deleteById(ruleId) == 0) return
         ruleIterator { onRemoved(ruleId) }
     }
 
     suspend fun deleteRules(rules: List<RuleEntity>) {
         SagerDatabase.rulesDao.deleteRules(rules)
         ruleIterator {
-            rules.forEach {
-                onRemoved(it.id)
-            }
+            rules.forEach { onRemoved(it.id) }
         }
     }
 
     suspend fun getRules(): List<RuleEntity> {
+        ensureDefaultRouteRules()
+        return SagerDatabase.rulesDao.allRules()
+    }
+
+    /**
+     * Ensure built-in route rules exist and CN split rules match [DataStore.autoSplitChina].
+     *
+     * Default policy (autoSplitChina=true):
+     * - geosite:cn / geoip:cn → direct (bypass)
+     * - everything else → proxy (sing-box default / route.final)
+     * - LAN bypass via DataStore.bypassLan*
+     *
+     * Must run before building config / starting VPN so split works without opening Route UI.
+     */
+    suspend fun ensureDefaultRouteRules() {
         var rules = SagerDatabase.rulesDao.allRules()
         if (rules.isEmpty() && !DataStore.rulesFirstCreate) {
             DataStore.rulesFirstCreate = true
-            createRule(
-                RuleEntity(
-                    name = app.getString(R.string.route_opt_block_quic),
-                    port = "443",
-                    network = "udp",
-                    outbound = -2
-                )
-            )
-            createRule(
-                RuleEntity(
-                    name = app.getString(R.string.route_opt_block_ads),
-                    domains = "geosite:category-ads-all",
-                    outbound = -2
-                )
-            )
-            val fuckedCountry = mutableListOf("cn:中国")
-            if (Locale.getDefault().country != Locale.CHINA.country) {
-                // 非中文用户
-                fuckedCountry += "ir:Iran"
-                fuckedCountry += "ru:Russia"
+            seedBuiltInRules()
+            rules = SagerDatabase.rulesDao.allRules()
+        }
+
+        // One-shot migration: older builds seeded CN rules as enabled=false.
+        if (!DataStore.chinaSplitMigrated) {
+            DataStore.chinaSplitMigrated = true
+            var changed = false
+            for (rule in rules) {
+                val isCnSplit = rule.domains.contains("geosite:cn") || rule.ip.contains("geoip:cn")
+                if (isCnSplit && !rule.enabled && DataStore.autoSplitChina) {
+                    rule.enabled = true
+                    SagerDatabase.rulesDao.updateRule(rule)
+                    changed = true
+                }
             }
-            for (c in fuckedCountry) {
-                val country = c.substringBefore(":")
-                val displayCountry = c.substringAfter(":")
-                //
-                if (country == "cn") createRule(
+            if (changed) {
+                Logs.w("Migrated: enabled geosite:cn / geoip:cn for auto China split")
+            }
+        }
+
+        syncChinaSplitRules(DataStore.autoSplitChina)
+    }
+
+    /** Enable/disable CN domain+IP bypass rules to match the auto-split toggle. */
+    suspend fun syncChinaSplitRules(enabled: Boolean) {
+        val rules = SagerDatabase.rulesDao.allRules()
+        var hasGeosite = false
+        var hasGeoip = false
+        for (rule in rules) {
+            val isGeosite = rule.domains.trim() == "geosite:cn" ||
+                rule.domains.split('\n', ',').any { it.trim() == "geosite:cn" }
+            val isGeoip = rule.ip.trim() == "geoip:cn" ||
+                rule.ip.split('\n', ',').any { it.trim() == "geoip:cn" }
+            if (!isGeosite && !isGeoip) continue
+            if (isGeosite) hasGeosite = true
+            if (isGeoip) hasGeoip = true
+            if (rule.enabled != enabled || rule.outbound != -1L) {
+                rule.enabled = enabled
+                rule.outbound = -1L
+                updateRule(rule)
+            }
+        }
+        if (enabled) {
+            if (!hasGeosite) {
+                createRule(
+                    RuleEntity(
+                        name = app.getString(R.string.route_bypass_domain, "中国"),
+                        domains = "geosite:cn",
+                        outbound = -1,
+                        enabled = true,
+                    )
+                )
+            }
+            if (!hasGeoip) {
+                createRule(
+                    RuleEntity(
+                        name = app.getString(R.string.route_bypass_ip, "中国"),
+                        ip = "geoip:cn",
+                        outbound = -1,
+                        enabled = true,
+                    )
+                )
+            }
+        }
+    }
+
+    private suspend fun seedBuiltInRules() {
+        // Optional helpers — enabled so a fresh install works out of the box.
+        createRule(
+            RuleEntity(
+                name = app.getString(R.string.route_opt_block_quic),
+                port = "443",
+                network = "udp",
+                outbound = -2,
+                enabled = true,
+            )
+        )
+        createRule(
+            RuleEntity(
+                name = app.getString(R.string.route_opt_block_ads),
+                domains = "geosite:category-ads-all",
+                outbound = -2,
+                enabled = true,
+            )
+        )
+
+        val fuckedCountry = mutableListOf("cn:中国")
+        if (Locale.getDefault().country != Locale.CHINA.country) {
+            fuckedCountry += "ir:Iran"
+            fuckedCountry += "ru:Russia"
+        }
+        for (c in fuckedCountry) {
+            val country = c.substringBefore(":")
+            val displayCountry = c.substringAfter(":")
+            if (country == "cn") {
+                createRule(
                     RuleEntity(
                         name = app.getString(R.string.route_play_store, displayCountry),
                         domains = "googleapis.cn",
-                    ), false
-                )
-                createRule(
-                    RuleEntity(
-                        name = app.getString(R.string.route_bypass_domain, displayCountry),
-                        domains = "geosite:$country",
-                        outbound = -1
-                    ), false
-                )
-                createRule(
-                    RuleEntity(
-                        name = app.getString(R.string.route_bypass_ip, displayCountry),
-                        ip = "geoip:$country",
-                        outbound = -1
-                    ), false
+                        outbound = 0,
+                        enabled = true,
+                    ),
+                    false
                 )
             }
-            rules = SagerDatabase.rulesDao.allRules()
+            // Domestic domains / IPs → direct; foreign → proxy (default final).
+            createRule(
+                RuleEntity(
+                    name = app.getString(R.string.route_bypass_domain, displayCountry),
+                    domains = "geosite:$country",
+                    outbound = -1,
+                    enabled = true,
+                ),
+                false
+            )
+            createRule(
+                RuleEntity(
+                    name = app.getString(R.string.route_bypass_ip, displayCountry),
+                    ip = "geoip:$country",
+                    outbound = -1,
+                    enabled = true,
+                ),
+                false
+            )
         }
-        return rules
     }
 
 }

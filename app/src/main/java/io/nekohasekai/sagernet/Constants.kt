@@ -35,6 +35,8 @@ object Key {
 
     const val BYPASS_LAN = "bypassLan"
     const val BYPASS_LAN_IN_CORE = "bypassLanInCore"
+    /** Domestic (CN) direct / foreign proxy split via geosite:cn + geoip:cn */
+    const val AUTO_SPLIT_CHINA = "autoSplitChina"
 
     const val MIXED_PORT = "mixedPort"
     const val ALLOW_ACCESS = "allowAccess"

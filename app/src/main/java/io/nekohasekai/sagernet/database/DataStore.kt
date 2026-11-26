@@ -104,8 +104,10 @@ object DataStore : OnPreferenceDataStoreChangeListener {
 
     var mtu by configurationStore.stringToInt(Key.MTU) { 9000 }
 
-    var bypassLan by configurationStore.boolean(Key.BYPASS_LAN)
-    var bypassLanInCore by configurationStore.boolean(Key.BYPASS_LAN_IN_CORE)
+    var bypassLan by configurationStore.boolean(Key.BYPASS_LAN) { true }
+    var bypassLanInCore by configurationStore.boolean(Key.BYPASS_LAN_IN_CORE) { true }
+    /** When true: geosite:cn / geoip:cn bypass (direct); everything else uses proxy. */
+    var autoSplitChina by configurationStore.boolean(Key.AUTO_SPLIT_CHINA) { true }
 
     var allowAccess by configurationStore.boolean(Key.ALLOW_ACCESS)
     var speedInterval by configurationStore.stringToInt(Key.SPEED_INTERVAL)
@@ -252,6 +254,8 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var subscriptionAutoUpdateDelay by profileCacheStore.stringToInt(Key.SUBSCRIPTION_AUTO_UPDATE_DELAY) { 360 }
 
     var rulesFirstCreate by profileCacheStore.boolean("rulesFirstCreate")
+    /** One-shot: enable legacy disabled geosite:cn / geoip:cn rules. */
+    var chinaSplitMigrated by profileCacheStore.boolean("chinaSplitMigrated")
 
     override fun onPreferenceDataStoreChanged(store: PreferenceDataStore, key: String) {
     }

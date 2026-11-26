@@ -238,10 +238,13 @@ fun buildConfig(
         outbounds = mutableListOf()
 
         // init routing object
+        // final_ = proxy: unmatched (foreign) traffic goes through the selected node;
+        // geosite:cn / geoip:cn rules (when enabled) send domestic traffic to bypass/direct.
         route = RouteOptions().apply {
             auto_detect_interface = true
             rules = mutableListOf()
             rule_set = mutableListOf()
+            if (!forTest) final_ = TAG_PROXY
         }
 
         // returns outbound tag

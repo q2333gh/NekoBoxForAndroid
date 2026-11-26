@@ -87,6 +87,12 @@ class SagerNet : Application(),
                 }
 
                 updateNotificationChannels()
+                // Seed / migrate domestic-direct rules early (not only when Route page opens).
+                try {
+                    io.nekohasekai.sagernet.database.ProfileManager.ensureDefaultRouteRules()
+                } catch (e: Exception) {
+                    Logs.w(e)
+                }
             }
         }
 

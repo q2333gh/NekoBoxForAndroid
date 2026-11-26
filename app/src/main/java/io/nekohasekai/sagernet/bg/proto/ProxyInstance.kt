@@ -3,6 +3,7 @@ package io.nekohasekai.sagernet.bg.proto
 import io.nekohasekai.sagernet.BuildConfig
 import io.nekohasekai.sagernet.bg.BaseService
 import io.nekohasekai.sagernet.bg.ServiceNotification
+import io.nekohasekai.sagernet.database.ProfileManager
 import io.nekohasekai.sagernet.database.ProxyEntity
 import io.nekohasekai.sagernet.ktx.Logs
 import io.nekohasekai.sagernet.ktx.runOnDefaultDispatcher
@@ -35,6 +36,8 @@ class ProxyInstance(profile: ProxyEntity, var service: BaseService.Interface? = 
     }
 
     override suspend fun init() {
+        // Ensure CN direct / foreign proxy rules exist & are enabled before config build.
+        ProfileManager.ensureDefaultRouteRules()
         super.init()
         pluginConfigs.forEach { (_, plugin) ->
             val (_, content) = plugin
