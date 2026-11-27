@@ -691,36 +691,70 @@ class ConfigurationFragment @JvmOverloads constructor(
 
     }
 
+    /**
+     * TCP Ping without monopolizing the UI: no modal dialog / Minimize button.
+     * Click → immediately background; stream each result onto the main list.
+     */
     @OptIn(DelicateCoroutinesApi::class)
     @Suppress("EXPERIMENTAL_API_USAGE")
     fun pingTest(icmpPing: Boolean) {
-        if (DataStore.runningTest) return else DataStore.runningTest = true
-        val test = TestDialog()
-        val dialog = test.builder.show()
+        if (DataStore.runningTest) {
+            snackbar(R.string.connection_test_testing).show()
+            return
+        }
+        DataStore.runningTest = true
+
         val testJobs = mutableListOf<Job>()
         val group = DataStore.currentGroup()
+        val finishedN = AtomicInteger(0)
+        val publishLock = Mutex()
+        val notification = ConnectionTestNotification(
+            requireContext(),
+            "[${group.displayName()}] ${getString(R.string.connection_test_tcp_ping)}"
+        )
 
-        val mainJob = runOnDefaultDispatcher {
+        snackbar(R.string.connection_test_testing).show()
+
+        suspend fun publishToMainUi(profile: ProxyEntity) {
+            publishLock.withLock {
+                ProfileManager.updateProfile(profile)
+            }
+        }
+
+        runOnDefaultDispatcher {
             val profilesList = SagerDatabase.proxyDao.getByGroup(group.id).filter {
                 if (icmpPing) {
-                    if (it.requireBean().canICMPing()) {
-                        return@filter true
-                    }
+                    it.requireBean().canICMPing()
                 } else {
-                    if (it.requireBean().canTCPing()) {
-                        return@filter true
-                    }
+                    it.requireBean().canTCPing()
                 }
-                return@filter false
             }
-            test.proxyN = profilesList.size
+            val proxyN = profilesList.size
+            if (proxyN == 0) {
+                runOnMainDispatcher {
+                    notification.updateNotification(0, 0, true)
+                    DataStore.runningTest = false
+                }
+                return@runOnDefaultDispatcher
+            }
+
+            notification.updateNotification(0, proxyN, false)
             val profiles = ConcurrentLinkedQueue(profilesList)
-            repeat(DataStore.connectionTestConcurrent) {
+            val concurrent = DataStore.connectionTestConcurrent.coerceAtLeast(1)
+
+            repeat(concurrent) {
                 testJobs.add(launch(Dispatchers.IO) {
                     while (isActive) {
                         val profile = profiles.poll() ?: break
 
                         profile.status = 0
+                        profile.error = null
+                        try {
+                            publishToMainUi(profile)
+                        } catch (e: Exception) {
+                            Logs.w(e)
+                        }
+
                         var address = profile.requireBean().serverAddress
                         if (!address.isIpAddress()) {
                             try {
@@ -736,55 +770,53 @@ class ConfigurationFragment @JvmOverloads constructor(
                         if (!address.isIpAddress()) {
                             profile.status = 2
                             profile.error = app.getString(R.string.connection_test_domain_not_found)
-                            test.update(profile)
-                            continue
-                        }
-                        try {
-                            if (icmpPing) {
-                                // removed
-                            } else {
-                                val socket =
-                                    SagerNet.underlyingNetwork?.socketFactory?.createSocket()
-                                        ?: Socket()
-                                try {
-                                    socket.soTimeout = 3000
-                                    socket.bind(InetSocketAddress(0))
-                                    val start = SystemClock.elapsedRealtime()
-                                    socket.connect(
-                                        InetSocketAddress(
-                                            address, profile.requireBean().serverPort
-                                        ), 3000
-                                    )
-                                    if (!isActive) break
-                                    profile.status = 1
-                                    profile.ping = (SystemClock.elapsedRealtime() - start).toInt()
-                                    test.update(profile)
-                                } finally {
-                                    socket.closeQuietly()
+                        } else {
+                            try {
+                                if (icmpPing) {
+                                    // removed
+                                } else {
+                                    val socket =
+                                        SagerNet.underlyingNetwork?.socketFactory?.createSocket()
+                                            ?: Socket()
+                                    try {
+                                        socket.soTimeout = 3000
+                                        socket.bind(InetSocketAddress(0))
+                                        val start = SystemClock.elapsedRealtime()
+                                        socket.connect(
+                                            InetSocketAddress(
+                                                address, profile.requireBean().serverPort
+                                            ), 3000
+                                        )
+                                        if (!isActive) break
+                                        profile.status = 1
+                                        profile.ping =
+                                            (SystemClock.elapsedRealtime() - start).toInt()
+                                        profile.error = null
+                                    } finally {
+                                        socket.closeQuietly()
+                                    }
                                 }
-                            }
-                        } catch (e: Exception) {
-                            if (!isActive) break
-                            val message = e.readableMessage
+                            } catch (e: Exception) {
+                                if (!isActive) break
+                                val message = e.readableMessage
+                                if (icmpPing) {
+                                    profile.status = 2
+                                    profile.error =
+                                        app.getString(R.string.connection_test_unreachable)
+                                } else {
+                                    profile.status = 2
+                                    when {
+                                        !message.contains("failed:") -> profile.error =
+                                            app.getString(R.string.connection_test_timeout)
 
-                            if (icmpPing) {
-                                profile.status = 2
-                                profile.error = getString(R.string.connection_test_unreachable)
-                            } else {
-                                profile.status = 2
-                                when {
-                                    !message.contains("failed:") -> profile.error =
-                                        getString(R.string.connection_test_timeout)
-
-                                    else -> when {
                                         message.contains("ECONNREFUSED") -> {
                                             profile.error =
-                                                getString(R.string.connection_test_refused)
+                                                app.getString(R.string.connection_test_refused)
                                         }
 
                                         message.contains("ENETUNREACH") -> {
                                             profile.error =
-                                                getString(R.string.connection_test_unreachable)
+                                                app.getString(R.string.connection_test_unreachable)
                                         }
 
                                         else -> {
@@ -794,8 +826,15 @@ class ConfigurationFragment @JvmOverloads constructor(
                                     }
                                 }
                             }
-                            test.update(profile)
                         }
+
+                        try {
+                            publishToMainUi(profile)
+                        } catch (e: Exception) {
+                            Logs.w(e)
+                        }
+                        val progress = finishedN.addAndGet(1)
+                        notification.updateNotification(progress, proxyN, progress >= proxyN)
                     }
                 })
             }
@@ -803,33 +842,12 @@ class ConfigurationFragment @JvmOverloads constructor(
             testJobs.joinAll()
 
             runOnMainDispatcher {
-                test.cancel()
-            }
-        }
-        test.cancel = {
-            test.dialogStatus.set(2)
-            dialog.dismiss()
-            runOnDefaultDispatcher {
-                mainJob.cancel()
-                testJobs.forEach { it.cancel() }
-                test.results.forEach {
-                    try {
-                        ProfileManager.updateProfile(it)
-                    } catch (e: Exception) {
-                        Logs.w(e)
-                    }
-                }
-                GroupManager.postReload(DataStore.currentGroupId())
+                notification.updateNotification(proxyN, proxyN, true)
                 DataStore.runningTest = false
+                if (isAdded) {
+                    snackbar("${getString(R.string.connection_test_tcp_ping)} · $proxyN").show()
+                }
             }
-        }
-        test.minimize = {
-            test.dialogStatus.set(1)
-            test.notification = ConnectionTestNotification(
-                dialog.context,
-                "[${group.displayName()}] ${getString(R.string.connection_test)}"
-            )
-            dialog.hide()
         }
     }
 
